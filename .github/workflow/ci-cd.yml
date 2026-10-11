@@ -1,0 +1,57 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPO: myapp
+  CLUSTER: my-eks
+  ROLE_ARN: arn:aws:iam::661406600457:role/github-actions-role
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm test
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        run: |
+          IMG=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          docker build -t $IMG .
+          docker push $IMG
+          echo "IMG=$IMG" >> $GITHUB_ENV
+
+      - name: Deploy to Kubernetes
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER }} --region ${{ env.AWS_REGION }}
+          sed -i "s|IMAGE_PLACEHOLDER|$IMG|" k8s/deployment.yaml
+          kubectl apply -f k8s/
+
+
+          
+          kubectl rollout status deployment/myapp --timeout=180s
